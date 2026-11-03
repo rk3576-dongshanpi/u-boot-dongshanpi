@@ -5,13 +5,69 @@
  */
 
 #include <common.h>
+#include <dm.h>
 #include <dwc3-uboot.h>
+#include <pwm.h>
 #include <usb.h>
+#include <dt-bindings/pwm/pwm.h>
 #include <linux/usb/phy-rockchip-usbdp.h>
 #include <asm/io.h>
 #include <rockusb.h>
 
 DECLARE_GLOBAL_DATA_PTR;
+
+#if defined(CONFIG_DM_PWM) && !defined(CONFIG_SPL_BUILD) && !defined(CONFIG_SUPPORT_USBPLUG)
+
+#define DSHANPI_FAN_DUTY_PERCENT	40
+
+int rk_board_init(void)
+{
+	struct ofnode_phandle_args args;
+	struct udevice		  *pwm;
+	ofnode			   fan;
+	uint			   duty_ns;
+	int			   ret;
+
+	/* board_init() may already have switched to the kernel device tree. */
+	fan = ofnode_path("/pwm-fan");
+	if (!ofnode_valid(fan) || !ofnode_is_available(fan))
+		return 0;
+
+	ret = ofnode_parse_phandle_with_args(fan, "pwms", "#pwm-cells", 0, 0, &args);
+	if (ret)
+		goto err;
+	if (args.args_count != 3 || !args.args[1]) {
+		ret = -EINVAL;
+		goto err;
+	}
+
+	ret = uclass_get_device_by_ofnode(UCLASS_PWM, args.node, &pwm);
+	if (ret)
+		goto err;
+
+	ret = pwm_set_invert(pwm, args.args[0], args.args[2] & PWM_POLARITY_INVERTED);
+	if (ret)
+		goto err;
+
+	/* Duty is the active portion, which is low for the DShanPi fan. */
+	duty_ns = (u64)args.args[1] * DSHANPI_FAN_DUTY_PERCENT / 100;
+	ret     = pwm_set_config(pwm, args.args[0], args.args[1], duty_ns);
+	if (ret)
+		goto err;
+
+	ret = pwm_set_enable(pwm, args.args[0], true);
+	if (ret)
+		goto err;
+
+	printf("Fan: PWM duty %u%%\n", DSHANPI_FAN_DUTY_PERCENT);
+	return 0;
+
+err:
+	/* A fan setup failure must not prevent the OS from booting. */
+	printf("Fan: PWM setup failed (%d)\n", ret);
+	return 0;
+}
+#endif
 
 #ifdef CONFIG_USB_DWC3
 #define CRU_BASE		0x27200000
